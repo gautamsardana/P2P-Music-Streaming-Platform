@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Central tracker: keeps   file → [peer_uri]   map
-Run once:  python tracker.py
-"""
-
 import time
 import threading
 from collections import defaultdict
@@ -12,41 +6,49 @@ from config import TRACKER_HOST, TRACKER_PORT
 
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
+Pyro4.config.COMMTIMEOUT = 2
+
 
 @Pyro4.expose
 class Tracker:
     def __init__(self, ttl=30):
         self._lock = threading.Lock()
-        self.file_map = defaultdict(set)      # {file: set(peer_uri)}
-        self.last_seen = {}                   # {peer_uri: timestamp}
-        self.ttl = ttl                        # peer TTL for cleanup
+        self.chunk_map = defaultdict(set)  # {chunk_name: set(peer_uri)}
+        self.last_seen = {}  # {peer_uri: timestamp}
+        self.ttl = ttl
         print("[TRACKER] Initialized tracker with TTL =", self.ttl)
         threading.Thread(target=self._reaper, daemon=True).start()
 
-    def register(self, peer_uri, files):
-        """POST /register"""
+    def register_chunks(self, peer_uri, chunk_names):
+        """POST /register_chunks"""
         with self._lock:
-            print(f"[TRACKER] REGISTER: {peer_uri} is sharing files: {files}")
-            for f in files:
-                self.file_map[f].add(peer_uri)
+            print(f"[TRACKER] REGISTER: {peer_uri} has chunks: {chunk_names}")
+            for chunk in chunk_names:
+                self.chunk_map[chunk].add(peer_uri)
             self.last_seen[peer_uri] = time.time()
         return True
 
-    def peersForFile(self, filename):
-        """GET /peersForFile/<file>"""
+    def peersForChunk(self, chunk_name):
+        """GET /peersForChunk/<chunk>"""
         with self._lock:
-            print("[TRACKER] Entered query---")
-            peers = list(self.file_map.get(filename, []))
-            print(f"[TRACKER] QUERY: Who has '{filename}'? → {peers}")
+            peers = list(self.chunk_map.get(chunk_name, []))
+            print(f"[TRACKER] QUERY: Who has chunk '{chunk_name}'? → {peers}")
             return peers
 
-    def updateFileList(self, peer_uri, new_file):
-        """POST /update"""
+    def updateChunkList(self, peer_uri, new_chunk):
+        """POST /update_chunk"""
         with self._lock:
-            print(f"[TRACKER] UPDATE: {peer_uri} downloaded and now owns '{new_file}'")
-            self.file_map[new_file].add(peer_uri)
+            print(f"[TRACKER] UPDATE: {peer_uri} downloaded and now owns chunk '{new_chunk}'")
+            self.chunk_map[new_chunk].add(peer_uri)
             self.last_seen[peer_uri] = time.time()
         return True
+
+    def getChunksForFile(self, filename_prefix):
+        """ Returns all known chunk filenames that belong to a given base file """
+        with self._lock:
+            chunks = [fname for fname in self.chunk_map if fname.startswith(filename_prefix.replace('.mp3', '.part'))]
+            print(f"[TRACKER] Chunks for '{filename_prefix}' → {chunks}")
+            return sorted(chunks)
 
     def heartbeat(self, peer_uri):
         """Keep-alive ping"""
@@ -55,7 +57,6 @@ class Tracker:
         return True
 
     def _reaper(self):
-        """Background thread to prune dead peers"""
         while True:
             time.sleep(self.ttl)
             cutoff = time.time() - self.ttl
@@ -64,8 +65,9 @@ class Tracker:
                 for p in dead:
                     print(f"[TRACKER] REAPER: Removing inactive peer {p}")
                     del self.last_seen[p]
-                    for peers in self.file_map.values():
+                    for peers in self.chunk_map.values():
                         peers.discard(p)
+
 
 def main():
     print("[TRACKER] Starting daemon...")
@@ -73,6 +75,7 @@ def main():
     uri = daemon.register(Tracker(), objectId="obj_tracker")
     print(f"[TRACKER] Running → {uri}")
     daemon.requestLoop()
+
 
 if __name__ == "__main__":
     main()

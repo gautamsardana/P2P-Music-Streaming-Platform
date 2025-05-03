@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Peer node.
-Usage:  python peer.py <peer_number>
-"""
 import os
 import sys
 import time
@@ -11,16 +6,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import Pyro4
 from config import TRACKER_HOST, TRACKER_PORT
+from chunk_utils import combine_file
+from chunk_utils import tracker_call
 
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
 Pyro4.config.COMMTIMEOUT = 2
 
-
 PEER_NUM = sys.argv[1]
 MUSIC_DIR = os.path.join("peers", f"peer{PEER_NUM}", "music")
-HEARTBEAT_INTERVAL = 10  # seconds
-MAX_WORKERS = 4  # simultaneous uploads
+HEARTBEAT_INTERVAL = 10
+MAX_WORKERS = 6
 
 
 @Pyro4.expose
@@ -28,22 +24,19 @@ class PeerServer(object):
     def __init__(self, base_dir):
         self.base_dir = base_dir
 
-    def music(self, filename):
-        path = os.path.join(self.base_dir, filename)
-        print(f"[PEER] Received request for file '{filename}' → {path}")
+    def get_chunk(self, chunk_name):
+        path = os.path.join(self.base_dir, chunk_name)
+        print(f"[PEER {PEER_NUM}] Request for chunk '{chunk_name}' → {path}")
         if not os.path.isfile(path):
-            print(f"[PEER] File '{filename}' not found")
-            raise FileNotFoundError(filename)
+            print(f"[PEER {PEER_NUM}] Chunk not found: {chunk_name}")
+            raise FileNotFoundError(chunk_name)
         with open(path, "rb") as f:
-            content = f.read()
-            if not isinstance(content, bytes):
-                raise TypeError(f"[PEER] INTERNAL ERROR: returning non-bytes type {type(content)}")
-            print(f"[PEER] Returning file: {filename}, size: {len(content)} bytes")
-            return content
+            return f.read()
 
 
-def discover_files():
-    return [f for f in os.listdir(MUSIC_DIR) if os.path.isfile(os.path.join(MUSIC_DIR, f))]
+def discover_chunks():
+    return [f for f in os.listdir(MUSIC_DIR)
+            if os.path.isfile(os.path.join(MUSIC_DIR, f)) and ".part" in f]
 
 
 def run_heartbeat(tracker, my_uri):
@@ -55,58 +48,52 @@ def run_heartbeat(tracker, my_uri):
         time.sleep(HEARTBEAT_INTERVAL)
 
 
-def get_peers_for_file(tracker, filename):
-    for attempt in range(3):
-        print(f"[PEER] Download Attempt {attempt}...")
-        try:
-            return tracker.peersForFile(filename)
-        except Exception as e:
-            print(f"[WARN] Tracker query failed (attempt {attempt + 1}): {e}")
-            time.sleep(1)
-    return []
-
-
-def download(tracker, my_uri, filename):
-    print(f"[{my_uri}] Trying to download '{filename}'")
-
+def download_chunk(tracker, my_uri, chunk_name, dest_path):
     try:
-        peers = get_peers_for_file(tracker, filename)
+        peers = tracker.peersForChunk(chunk_name)
     except Exception as e:
-        print(f"[{my_uri}] Tracker query failed: {e}")
-        return
+        print(f"[{my_uri}] Tracker query failed for chunk {chunk_name}: {e}")
+        return False
 
     peers = [p for p in peers if p != my_uri]
     if not peers:
-        print(f"[{my_uri}] No peers found for file '{filename}'")
-        return
+        print(f"[{my_uri}] No peers found for chunk '{chunk_name}'")
+        return False
 
     for peer_uri in peers:
         try:
             peer = Pyro4.Proxy(peer_uri)
-            data = peer.music(filename)
-            print(f"[{my_uri}] Peer {peer_uri} returned type: {type(data)}")
-
+            data = peer.get_chunk(chunk_name)
             if not isinstance(data, bytes):
-                print(f"[{my_uri}] Error: peer {peer_uri} returned non-bytes object")
-                continue  # try next peer
-
-            path = os.path.join(MUSIC_DIR, filename)
-            with open(path, "wb") as f:
+                continue
+            with open(dest_path, "wb") as f:
                 f.write(data)
-
-            tracker.updateFileList(my_uri, filename)
-            print(f"[{my_uri}] Successfully downloaded '{filename}' from {peer_uri}")
-            return
-
+            tracker.updateChunkList(my_uri, chunk_name)
+            print(f"[{my_uri}] Downloaded chunk '{chunk_name}' from {peer_uri}")
+            return True
         except Exception as e:
-            print(f"[{my_uri}] Failed to download from {peer_uri}: {e}")
+            print(f"[{my_uri}] Failed to get '{chunk_name}' from {peer_uri}: {e}")
 
-    print(f"[{my_uri}] Download failed")
+    print(f"[{my_uri}] All attempts failed for chunk '{chunk_name}'")
+    return False
 
-    path = os.path.join(MUSIC_DIR, filename)
-    if os.path.exists(path) and os.path.getsize(path) == 0:
-        print(f"[{my_uri}] Removing empty file '{filename}'")
-        os.remove(path)
+
+def parallel_download(tracker, my_uri, base_filename, total_parts):
+    futures = []
+    pool = ThreadPoolExecutor(MAX_WORKERS)
+    downloaded_parts = []
+
+    for chunk in total_parts:
+        dest = os.path.join(MUSIC_DIR, chunk)
+        downloaded_parts.append(dest)
+        futures.append(pool.submit(download_chunk, tracker, my_uri, chunk, dest))
+
+    results = [f.result() for f in futures]
+    if all(results):
+        combine_file(downloaded_parts, os.path.join(MUSIC_DIR, base_filename))
+        print(f"[{my_uri}] All chunks downloaded and reassembled into {base_filename}")
+    else:
+        print(f"[{my_uri}] Some chunks failed to download. File incomplete.")
 
 
 def main():
@@ -115,33 +102,48 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: peer.py <peer_number>")
         sys.exit(1)
-    peer_number = sys.argv[1]
 
-    # ---------- Pyro init ----------
+    # Pyro init
     daemon = Pyro4.Daemon()
     me = PeerServer(MUSIC_DIR)
-    my_uri = daemon.register(me)  # uri string
+    my_uri = daemon.register(me)
     threading.Thread(target=daemon.requestLoop, daemon=True).start()
 
     tracker = Pyro4.Proxy(f"PYRO:obj_tracker@{TRACKER_HOST}:{TRACKER_PORT}")
 
-    # ---------- initial registration ----------
-    files = discover_files()
-    tracker.register(my_uri, files)
-    print(f"[Peer {peer_number}] online → {my_uri}  sharing {files}")
+    # initial chunk registration
+    chunks = discover_chunks()
+    tracker.register_chunks(my_uri, chunks)
+    print(f"[Peer {PEER_NUM}] online → {my_uri}  sharing chunks: {chunks}")
 
-    # ---------- heartbeat ----------
+    # heartbeat
     threading.Thread(target=run_heartbeat, args=(tracker, my_uri), daemon=True).start()
 
-    # ---------- CLI loop ----------
-    pool = ThreadPoolExecutor(MAX_WORKERS)
+    # CLI
     while True:
         cmd = input("> ").strip()
         if cmd.startswith("get "):
             filename = cmd.split(" ", 1)[1]
-            pool.submit(download, tracker, my_uri, filename)
+            print(f"[PEER {PEER_NUM}] Resolving chunks for '{filename}'...")
+
+            all_chunks = tracker_call(tracker.getChunksForFile, filename, description="Fetching chunks for file")
+            if not all_chunks:
+                print(f"[{my_uri}] No chunks found or tracker not responding.")
+                continue
+
+            my_chunks = [c for c in all_chunks if my_uri not in tracker_call(tracker.peersForChunk, c,
+                                                                             description=f"Checking owners of {c}") or []]
+
+            if not all_chunks:
+                print(f"[PEER {PEER_NUM}] No chunks found for '{filename}' on tracker.")
+                continue
+
+            print(f"[PEER {PEER_NUM}] Found {len(all_chunks)} chunks: {all_chunks}")
+            parallel_download(tracker, my_uri, filename, all_chunks)
+
+
         elif cmd == "files":
-            print("Local:", discover_files())
+            print("Local:", discover_chunks())
         elif cmd == "exit":
             break
 
