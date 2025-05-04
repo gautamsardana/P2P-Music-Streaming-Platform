@@ -34,6 +34,11 @@ def main():
                    help="Root of peers/peerX/music directories")
     args = p.parse_args()
 
+    for i in range(1, args.peers + 1):
+        folder = os.path.join(args.dest_dir, f"peer{i}", "music")
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+
     tmp = os.path.join("tools", "_chunks")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)

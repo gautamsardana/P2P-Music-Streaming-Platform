@@ -120,16 +120,23 @@ def handle_get_command(tracker, my_uri, filename):
         print(f"[PEER {PEER_NUM}] Downloading missing parts: {missing}")
         results = parallel_download(tracker, my_uri, missing)
         if not all(results):
-            print(f"[{my_uri}] Download failures; aborting.")
+            print(f"[{my_uri}] Download failures; aborting before combine.")
             return False
-    else:
-        print(f"[PEER {PEER_NUM}] All parts present; skipping download.")
+        # refresh existing after download
+        existing = set(discover_chunks())
 
-    # assemble
+    # final check: did we get *every* chunk?
+    still_missing = [c for c in all_chunks if c not in existing]
+    if still_missing:
+        print(f"[PEER {PEER_NUM}] Still missing parts: {still_missing}; cannot assemble.")
+        return False
+
+    # assemble only when all are here
     paths = [os.path.join(MUSIC_DIR, c) for c in all_chunks]
     combine_file(paths, os.path.join(MUSIC_DIR, filename))
     print(f"[PEER {PEER_NUM}] Reassembled → {filename}")
     return True
+
 
 
 def main():

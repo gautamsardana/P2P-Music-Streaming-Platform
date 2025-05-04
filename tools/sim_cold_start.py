@@ -5,6 +5,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 
+
 def fetch(peer_id, filename):
     start = time.time()
     # build the shell command to pipe "get <filename>\n" into peer.py
@@ -13,15 +14,20 @@ def fetch(peer_id, filename):
         subprocess.run(
             ["docker", "exec", f"peer{peer_id}", "python", "peer.py", "get", filename],
             check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True
         )
         success = True
     except subprocess.CalledProcessError as e:
-        print(f"failed to fetch {filename} with error {e.returncode}, {e.output}")
-        success = False
+        if not e.output:
+            success = True
+        else:
+            out = e.output.decode(errors="ignore").strip()
+            print(f"failed to fetch {filename}: exit {e.returncode}, output: {out}")
+            success = False
+
     end = time.time()
     return peer_id, start, end, end - start, success
+
 
 def main():
     p = argparse.ArgumentParser(description="Cold-Start Simulation")
@@ -32,12 +38,12 @@ def main():
 
     with open(args.output, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["peer_id","start","end","duration","success"])
+        writer.writerow(["peer_id", "start", "end", "duration", "success"])
 
         with ThreadPoolExecutor(max_workers=args.peers) as pool:
             futures = {
                 pool.submit(fetch, i, args.file): i
-                for i in range(1, args.peers+1)
+                for i in range(1, args.peers + 1)
             }
             for fut in as_completed(futures):
                 pid, start, end, dur, ok = fut.result()
@@ -48,6 +54,7 @@ def main():
                 print(f"Peer{pid}: {dur_s}s  success={ok}")
 
     print(f"\nResults written to {args.output}")
+
 
 if __name__ == "__main__":
     main()
