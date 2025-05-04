@@ -3,23 +3,23 @@ set -euo pipefail
 
 NUM_PEERS=50
 
-# 0) Remove any old peer containers so names won't collide
+# remove old peers
 for i in $(seq 1 $NUM_PEERS); do
   docker rm -f peer$i >/dev/null 2>&1 || true
 done
 
-# 1) Tear down tracker (and any old Compose containers & network)
-docker-compose down
+# tear down tracker & network
+docker-compose down --remove-orphans
 
-# 2) Bring up only the tracker (this also creates the p2pnet network)
+# start tracker (also creates p2pnet)
 docker-compose up -d tracker
 
-# 3) Prepare each peer's music folder on the host
+# prepare folders
 for i in $(seq 1 $NUM_PEERS); do
   mkdir -p peers/peer$i/music
 done
 
-# 4) Launch each peer service with its own PEER_ID
+# launch peers
 for i in $(seq 1 $NUM_PEERS); do
   echo "Starting peer $i..."
   docker-compose run -d \

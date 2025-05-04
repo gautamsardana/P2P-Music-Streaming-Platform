@@ -10,6 +10,7 @@ from chunk_utils import split_file
 
 
 def distribute_chunks(parts, num_peers, replication, dest_root):
+    os.makedirs(dest_root, exist_ok=True)
     for part in parts:
         targets = random.sample(range(1, num_peers + 1), k=min(replication, num_peers))
         for peer in targets:

@@ -1,9 +1,6 @@
-version: "3.9"
-
 services:
   tracker:
     build: .
-    # override to run tracker.py
     entrypoint: ["python","tracker.py"]
     ports:
       - "9090:9090"
@@ -12,10 +9,9 @@ services:
 
   peer:
     build: .
-    # peer.py is the default via your Dockerfile
     entrypoint: ["python","peer.py"]
     volumes:
-      - ./peers:/app/peers   # read-write so each peer writes into peers/peerX/music
+      - ./peers:/app/peers
     networks:
       - p2pnet
 
