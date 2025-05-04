@@ -3,35 +3,23 @@ version: "3.9"
 services:
   tracker:
     build: .
-    # now this runs: python tracker.py
-    command: ["tracker.py"]
+    # override to run tracker.py
+    entrypoint: ["python","tracker.py"]
     ports:
       - "9090:9090"
+    networks:
+      - p2pnet
 
-  peer1:
+  peer:
     build: .
-    depends_on: [tracker]
-    command: ["peer.py", "1"]
-    stdin_open: true
-    tty: true
+    # peer.py is the default via your Dockerfile
+    entrypoint: ["python","peer.py"]
+    volumes:
+      - ./peers:/app/peers   # read-write so each peer writes into peers/peerX/music
+    networks:
+      - p2pnet
 
-  peer2:
-    build: .
-    depends_on: [tracker]
-    command: ["peer.py", "2"]
-    stdin_open: true
-    tty: true
-
-  peer3:
-    build: .
-    depends_on: [ tracker ]
-    command: [ "peer.py", "3" ]
-    stdin_open: true
-    tty: true
-
-  peer4:
-    build: .
-    depends_on: [ tracker ]
-    command: [ "peer.py", "4" ]
-    stdin_open: true
-    tty: true
+networks:
+  p2pnet:
+    driver: bridge
+    name: p2pnet

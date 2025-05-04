@@ -9,17 +9,25 @@ import Pyro4
 from config import TRACKER_HOST, TRACKER_PORT
 from chunk_utils import combine_file, tracker_call
 
-# allow pickle for easy prototyping (swap out in prod!)
+# ── Pyro4 configuration ────────────────────────────────────────────────────────
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
 Pyro4.config.COMMTIMEOUT = 2
 
-PEER_NUM = sys.argv[1]
+# ── Determine this peer’s ID ────────────────────────────────────────────────────
+env_id = os.environ.get("PEER_ID")
+if not env_id:
+    print("⛔️  PEER_ID environment variable is required!")
+    sys.exit(1)
+PEER_NUM = env_id
+print(f"[PEER {PEER_NUM}] starting up…")
+
+# ── Paths & constants ──────────────────────────────────────────────────────────
 MUSIC_DIR = os.path.join("peers", f"peer{PEER_NUM}", "music")
 HEARTBEAT_INTERVAL = 10
 MAX_WORKERS = 6
 
-# figure out your container's DNS name (Compose service name)
+# ── Your container’s hostname for Pyro NAT advertising ─────────────────────────
 HOSTNAME = socket.gethostname()
 
 
@@ -71,13 +79,12 @@ def download_chunk(tracker, my_uri, chunk_name, dest_path):
         try:
             peer = Pyro4.Proxy(peer_uri)
             data = peer.get_chunk(chunk_name)
-            if not isinstance(data, bytes):
-                continue
-            with open(dest_path, "wb") as f:
-                f.write(data)
-            tracker.updateChunkList(my_uri, chunk_name)
-            print(f"[{my_uri}] Downloaded chunk '{chunk_name}' from {peer_uri}")
-            return True
+            if isinstance(data, bytes):
+                with open(dest_path, "wb") as f:
+                    f.write(data)
+                tracker.updateChunkList(my_uri, chunk_name)
+                print(f"[{my_uri}] Downloaded chunk '{chunk_name}' from {peer_uri}")
+                return True
         except Exception as e:
             print(f"[{my_uri}] Failed to get '{chunk_name}' from {peer_uri}: {e}")
 
@@ -97,11 +104,7 @@ def parallel_download(tracker, my_uri, chunk_list):
 def main():
     os.makedirs(MUSIC_DIR, exist_ok=True)
 
-    if len(sys.argv) < 2:
-        print("Usage: peer.py <peer_number>")
-        sys.exit(1)
-
-    # -- Pyro init: listen on 0.0.0.0, advertise your container hostname --
+    # start Pyro daemon, listening on all interfaces, advertise container name
     daemon = Pyro4.Daemon(host="0.0.0.0", nathost=HOSTNAME)
     me = PeerServer(MUSIC_DIR)
     my_uri = daemon.register(me)
@@ -122,7 +125,13 @@ def main():
 
     # interactive CLI
     while True:
-        cmd = input("> ").strip()
+        try:
+            cmd = input("> ").strip()
+        except EOFError:
+            # keep the container alive when detached
+            time.sleep(1)
+            continue
+
         if cmd.startswith("get "):
             filename = cmd.split(" ", 1)[1]
             print(f"[PEER {PEER_NUM}] Resolving chunks for '{filename}'...")
