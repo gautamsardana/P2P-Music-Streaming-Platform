@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  tracker:
+    build: .
+    # now this runs: python tracker.py
+    command: ["tracker.py"]
+    ports:
+      - "9090:9090"
+
+  peer1:
+    build: .
+    depends_on: [tracker]
+    command: ["peer.py", "1"]
+    stdin_open: true
+    tty: true
+
+  peer2:
+    build: .
+    depends_on: [tracker]
+    command: ["peer.py", "2"]
+    stdin_open: true
+    tty: true
+
+  peer3:
+    build: .
+    depends_on: [ tracker ]
+    command: [ "peer.py", "3" ]
+    stdin_open: true
+    tty: true
+
+  peer4:
+    build: .
+    depends_on: [ tracker ]
+    command: [ "peer.py", "4" ]
+    stdin_open: true
+    tty: true

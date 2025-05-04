@@ -71,7 +71,7 @@ class Tracker:
 
 def main():
     print("[TRACKER] Starting daemon...")
-    daemon = Pyro4.Daemon(host=TRACKER_HOST, port=TRACKER_PORT)
+    daemon = Pyro4.Daemon(host="0.0.0.0", port=TRACKER_PORT)
     uri = daemon.register(Tracker(), objectId="obj_tracker")
     print(f"[TRACKER] Running → {uri}")
     daemon.requestLoop()

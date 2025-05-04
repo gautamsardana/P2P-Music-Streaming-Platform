@@ -5,7 +5,7 @@ import shutil
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from chunk_utils import split_file
 
-SOURCE_FILE = "tools/music/in_the_light.mp3"
+SOURCE_FILE = "tools/music/comf_numb.mp3"
 NUM_PEERS = 3
 DEST_DIR = "peers"
 
