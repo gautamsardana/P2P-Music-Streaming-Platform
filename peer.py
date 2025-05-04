@@ -6,7 +6,7 @@ import socket
 from concurrent.futures import ThreadPoolExecutor
 
 import Pyro4
-from config import TRACKER_HOST, TRACKER_PORT
+from config import TRACKER_HOST, TRACKER_PORT, ORIGINAL_MUSIC_DIR
 from chunk_utils import combine_file, tracker_call
 
 # ── Pyro4 configuration ────────────────────────────────────────────────────────
@@ -103,6 +103,7 @@ def parallel_download(tracker, my_uri, parts):
 
 def handle_get_command(tracker, my_uri, filename):
     """Invoke the same logic as interactive 'get', then exit."""
+    # 1) Resolve & download missing parts
     print(f"[PEER {PEER_NUM}] (CLI) Resolving '{filename}'...")
     all_chunks = tracker_call(
         tracker.getChunksForFile,
@@ -115,27 +116,36 @@ def handle_get_command(tracker, my_uri, filename):
 
     existing = set(discover_chunks())
     missing = [c for c in all_chunks if c not in existing]
-
     if missing:
         print(f"[PEER {PEER_NUM}] Downloading missing parts: {missing}")
         results = parallel_download(tracker, my_uri, missing)
         if not all(results):
-            print(f"[{my_uri}] Download failures; aborting before combine.")
+            print(f"[{my_uri}] Download failures; aborting.")
             return False
-        # refresh existing after download
-        existing = set(discover_chunks())
+    else:
+        print(f"[PEER {PEER_NUM}] All parts present; skipping download.")
 
-    # final check: did we get *every* chunk?
-    still_missing = [c for c in all_chunks if c not in existing]
-    if still_missing:
-        print(f"[PEER {PEER_NUM}] Still missing parts: {still_missing}; cannot assemble.")
-        return False
-
-    # assemble only when all are here
+    # 2) Combine all known parts into the final file
     paths = [os.path.join(MUSIC_DIR, c) for c in all_chunks]
-    combine_file(paths, os.path.join(MUSIC_DIR, filename))
+    output_path = os.path.join(MUSIC_DIR, filename)
+    combine_file(paths, output_path)
     print(f"[PEER {PEER_NUM}] Reassembled → {filename}")
+
+    # 3) Size‐validation against the original master file
+    orig = os.path.join(ORIGINAL_MUSIC_DIR, filename)
+    if os.path.isfile(orig):
+        got = os.path.getsize(output_path)
+        want = os.path.getsize(orig)
+        if got != want:
+            print(f"[PEER {PEER_NUM}] Size mismatch: got {got} bytes, expected {want} bytes")
+            return False
+        else:
+            print(f"[PEER {PEER_NUM}] Size check: {got} bytes (matches original)")
+    else:
+        print(f"[PEER {PEER_NUM}] Warning: original not found at {orig} — skipping size check")
+
     return True
+
 
 
 
