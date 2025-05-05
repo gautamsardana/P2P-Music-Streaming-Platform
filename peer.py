@@ -4,22 +4,43 @@ import time
 import threading
 import socket
 from concurrent.futures import ThreadPoolExecutor
+from config import TRACKER_HOST, TRACKER_PORT, ORIGINAL_MUSIC_DIR, CC_ALGO
+import ssl
+
+# Monkey-patch socket.socket to set TCP congestion control
+_orig_socket = socket.socket
+def _socket_with_cc(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0, fileno=None):
+    s = _orig_socket(family, type, proto, fileno)
+    try:
+        # choose 'reno', 'cubic', 'bbr', etc.
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, CC_ALGO)
+    except Exception:
+        pass  # if the kernel inside the Docker VM doesn't support it, ignore
+    return s
+socket.socket = _socket_with_cc
 
 import Pyro4
-from config import TRACKER_HOST, TRACKER_PORT
 from chunk_utils import combine_file, tracker_call
 
-# allow pickle for easy prototyping (swap out in prod!)
+# Pyro4 conf
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
-Pyro4.config.COMMTIMEOUT = 2
+Pyro4.config.COMMTIMEOUT = 10
 
-PEER_NUM = sys.argv[1]
+# Determine this peer’s ID
+env_id = os.environ.get("PEER_ID")
+if not env_id:
+    print("PEER_ID environment variable is required!")
+    sys.exit(1)
+PEER_NUM = env_id
+print(f"[PEER {PEER_NUM}] starting up…")
+
+# Paths & constants
 MUSIC_DIR = os.path.join("peers", f"peer{PEER_NUM}", "music")
 HEARTBEAT_INTERVAL = 10
-MAX_WORKERS = 6
+MAX_WORKERS = 100
 
-# figure out your container's DNS name (Compose service name)
+# Your container’s hostname for Pyro NAT advertising
 HOSTNAME = socket.gethostname()
 
 
@@ -40,8 +61,8 @@ class PeerServer:
 
 def discover_chunks():
     return [
-        f for f in os.listdir(MUSIC_DIR)
-        if os.path.isfile(os.path.join(MUSIC_DIR, f)) and ".part" in f
+        fname for fname in os.listdir(MUSIC_DIR)
+        if os.path.isfile(os.path.join(MUSIC_DIR, fname)) and ".part" in fname
     ]
 
 
@@ -71,13 +92,12 @@ def download_chunk(tracker, my_uri, chunk_name, dest_path):
         try:
             peer = Pyro4.Proxy(peer_uri)
             data = peer.get_chunk(chunk_name)
-            if not isinstance(data, bytes):
-                continue
-            with open(dest_path, "wb") as f:
-                f.write(data)
-            tracker.updateChunkList(my_uri, chunk_name)
-            print(f"[{my_uri}] Downloaded chunk '{chunk_name}' from {peer_uri}")
-            return True
+            if isinstance(data, bytes):
+                with open(dest_path, "wb") as f:
+                    f.write(data)
+                tracker.updateChunkList(my_uri, chunk_name)
+                print(f"[{my_uri}] Downloaded chunk '{chunk_name}' from {peer_uri}")
+                return True
         except Exception as e:
             print(f"[{my_uri}] Failed to get '{chunk_name}' from {peer_uri}: {e}")
 
@@ -85,76 +105,106 @@ def download_chunk(tracker, my_uri, chunk_name, dest_path):
     return False
 
 
-def parallel_download(tracker, my_uri, chunk_list):
-    futures = []
+def parallel_download(tracker, my_uri, parts):
     with ThreadPoolExecutor(MAX_WORKERS) as pool:
-        for chunk in chunk_list:
-            dest = os.path.join(MUSIC_DIR, chunk)
-            futures.append(pool.submit(download_chunk, tracker, my_uri, chunk, dest))
+        futures = [
+            pool.submit(download_chunk, tracker, my_uri, c, os.path.join(MUSIC_DIR, c))
+            for c in parts
+        ]
     return [f.result() for f in futures]
 
 
+def handle_get_command(tracker, my_uri, filename):
+    """Invoke the same logic as interactive 'get', then exit."""
+    # 1) Resolve & download missing parts
+    start = time.time()
+    print(f"[PEER {PEER_NUM}] (CLI) Resolving '{filename}'...")
+    all_chunks = tracker_call(
+        tracker.getChunksForFile,
+        filename,
+        description="Get chunk list"
+    )
+    if not all_chunks:
+        print(f"[{my_uri}] No chunks found or tracker down.")
+        return False
+
+    existing = set(discover_chunks())
+    missing = [c for c in all_chunks if c not in existing]
+    if missing:
+        print(f"[PEER {PEER_NUM}] Downloading missing parts: {missing}")
+        results = parallel_download(tracker, my_uri, missing)
+        if not all(results):
+            print(f"[{my_uri}] Download failures; aborting.")
+            return False
+    else:
+        print(f"[PEER {PEER_NUM}] All parts present; skipping download.")
+
+    # 2) Combine all known parts into the final file
+    paths = [os.path.join(MUSIC_DIR, c) for c in all_chunks]
+    output_path = os.path.join(MUSIC_DIR, filename)
+    combine_file(paths, output_path)
+    print(f"[PEER {PEER_NUM}] Reassembled → {filename}")
+    end = time.time()
+    dur = f"{end-start:.3f}"
+    print(f"[PEER {PEER_NUM}] Time = {dur}")
+
+    # 3) Size‐validation against the original master file
+    orig = os.path.join(ORIGINAL_MUSIC_DIR, filename)
+    if os.path.isfile(orig):
+        got = os.path.getsize(output_path)
+        want = os.path.getsize(orig)
+        if got != want:
+            print(f"[PEER {PEER_NUM}] Size mismatch: got {got} bytes, expected {want} bytes")
+            return False
+        else:
+            print(f"[PEER {PEER_NUM}] Size check: {got} bytes (matches original)")
+    else:
+        print(f"[PEER {PEER_NUM}] Warning: original not found at {orig} — skipping size check")
+
+    return True
+
+
+
+
 def main():
+    # 1) Ensure the local folder exists
     os.makedirs(MUSIC_DIR, exist_ok=True)
 
-    if len(sys.argv) < 2:
-        print("Usage: peer.py <peer_number>")
-        sys.exit(1)
-
-    # -- Pyro init: listen on 0.0.0.0, advertise your container hostname --
+    # 2) Start Pyro daemon
     daemon = Pyro4.Daemon(host="0.0.0.0", nathost=HOSTNAME)
-    me = PeerServer(MUSIC_DIR)
-    my_uri = daemon.register(me)
-    print(f"[PEER {PEER_NUM}] serving chunks at {my_uri}")
-
+    server = PeerServer(MUSIC_DIR)
+    my_uri = daemon.register(server)
+    print(f"[PEER {PEER_NUM}] serving → {my_uri}")
     threading.Thread(target=daemon.requestLoop, daemon=True).start()
 
-    # connect to tracker
+    # 3) Connect to tracker & register initial chunks
     tracker = Pyro4.Proxy(f"PYRO:obj_tracker@{TRACKER_HOST}:{TRACKER_PORT}")
+    initial = discover_chunks()
+    tracker.register_chunks(my_uri, initial)
+    print(f"[PEER {PEER_NUM}] registered {len(initial)} parts")
 
-    # initial chunk registration
-    chunks = discover_chunks()
-    tracker.register_chunks(my_uri, chunks)
-    print(f"[PEER {PEER_NUM}] online → {my_uri}  sharing chunks: {chunks}")
-
-    # heartbeat thread
+    # 4) Start heartbeat
     threading.Thread(target=run_heartbeat, args=(tracker, my_uri), daemon=True).start()
 
-    # interactive CLI
+    # 5) If called as CLI: python peer.py get <file>
+    if len(sys.argv) >= 3 and sys.argv[1] == "get":
+        success = handle_get_command(tracker, my_uri, sys.argv[2])
+        sys.exit(0 if success else 1)
+
+    # 6) Otherwise interactive loop
     while True:
-        cmd = input("> ").strip()
+        try:
+            cmd = input("> ").strip()
+        except EOFError:
+            # keep the container alive when detached
+            time.sleep(1)
+            continue
+
         if cmd.startswith("get "):
-            filename = cmd.split(" ", 1)[1]
-            print(f"[PEER {PEER_NUM}] Resolving chunks for '{filename}'...")
-
-            all_chunks = tracker_call(
-                tracker.getChunksForFile,
-                filename,
-                description="Fetching chunks for file"
-            )
-            if not all_chunks:
-                print(f"[{my_uri}] No chunks found or tracker not responding.")
-                continue
-
-            existing = set(discover_chunks())
-            missing = [c for c in all_chunks if c not in existing]
-
-            if missing:
-                print(f"[PEER {PEER_NUM}] Downloading {len(missing)} missing parts: {missing}")
-                results = parallel_download(tracker, my_uri, missing)
-                if not all(results):
-                    print(f"[{my_uri}] Some chunks failed to download. File incomplete.")
-                    continue
-            else:
-                print(f"[PEER {PEER_NUM}] All {len(all_chunks)} parts present locally; skipping download.")
-
-            # reassemble from *all* parts once they’re on disk
-            paths = [os.path.join(MUSIC_DIR, part) for part in all_chunks]
-            combine_file(paths, os.path.join(MUSIC_DIR, filename))
-            print(f"[PEER {PEER_NUM}] File reassembled → {filename}")
-
+            _, filename = cmd.split(" ", 1)
+            handle_get_command(tracker, my_uri, filename)
         elif cmd == "files":
-            print("Local:", discover_chunks())
+            print("Local parts:", discover_chunks())
         elif cmd == "exit":
             break
 

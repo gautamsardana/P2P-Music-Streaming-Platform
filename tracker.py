@@ -1,20 +1,39 @@
 import time
 import threading
 from collections import defaultdict
+import socket
+from config import CC_ALGO
+import ssl
+
+_orig_socket = socket.socket
+def _socket_with_cc(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0, fileno=None):
+    s = _orig_socket(family, type, proto, fileno)
+    try:
+        # choose 'reno' ot 'cubic'.
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, CC_ALGO)
+    except Exception:
+        pass
+    return s
+socket.socket = _socket_with_cc
+
 import Pyro4
 from config import TRACKER_HOST, TRACKER_PORT
 
+Pyro4.config.SERVERTYPE = "thread"            # use the thread‐pool server
+Pyro4.config.THREADPOOL_SIZE = 100            # max worker threads
+Pyro4.config.THREADPOOL_SIZE_MIN = 20         # minimum threads to keep alive
+Pyro4.config.COMMTIMEOUT = 2                  # existing
+
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
-Pyro4.config.COMMTIMEOUT = 2
 
 
 @Pyro4.expose
 class Tracker:
     def __init__(self, ttl=30):
         self._lock = threading.Lock()
-        self.chunk_map = defaultdict(set)  # {chunk_name: set(peer_uri)}
-        self.last_seen = {}  # {peer_uri: timestamp}
+        self.chunk_map = defaultdict(set)
+        self.last_seen = {}
         self.ttl = ttl
         print("[TRACKER] Initialized tracker with TTL =", self.ttl)
         threading.Thread(target=self._reaper, daemon=True).start()

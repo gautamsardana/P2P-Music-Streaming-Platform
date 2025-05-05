@@ -1,37 +1,27 @@
-version: "3.9"
-
 services:
   tracker:
+    cap_add:
+      - NET_ADMIN
     build: .
-    # now this runs: python tracker.py
-    command: ["tracker.py"]
+    entrypoint: [ "python","tracker.py" ]
     ports:
       - "9090:9090"
+    networks:
+      - p2pnet
 
-  peer1:
+  peer:
+    cap_add:
+      - NET_ADMIN
+#    sysctls:
+#      net.ipv4.tcp_congestion_control: bbr
     build: .
-    depends_on: [tracker]
-    command: ["peer.py", "1"]
-    stdin_open: true
-    tty: true
+    entrypoint: [ "python","peer.py" ]
+    volumes:
+      - ./peers:/app/peers
+    networks:
+      - p2pnet
 
-  peer2:
-    build: .
-    depends_on: [tracker]
-    command: ["peer.py", "2"]
-    stdin_open: true
-    tty: true
-
-  peer3:
-    build: .
-    depends_on: [ tracker ]
-    command: [ "peer.py", "3" ]
-    stdin_open: true
-    tty: true
-
-  peer4:
-    build: .
-    depends_on: [ tracker ]
-    command: [ "peer.py", "4" ]
-    stdin_open: true
-    tty: true
+networks:
+  p2pnet:
+    driver: bridge
+    name: p2pnet
