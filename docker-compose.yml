@@ -1,5 +1,7 @@
 services:
   tracker:
+    cap_add:
+      - NET_ADMIN
     build: .
     entrypoint: [ "python","tracker.py" ]
     ports:

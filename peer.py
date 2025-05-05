@@ -4,17 +4,30 @@ import time
 import threading
 import socket
 from concurrent.futures import ThreadPoolExecutor
+from config import TRACKER_HOST, TRACKER_PORT, ORIGINAL_MUSIC_DIR, CC_ALGO
+import ssl
+
+# Monkey-patch socket.socket to set TCP congestion control
+_orig_socket = socket.socket
+def _socket_with_cc(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0, fileno=None):
+    s = _orig_socket(family, type, proto, fileno)
+    try:
+        # choose 'reno', 'cubic', 'bbr', etc.
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, CC_ALGO)
+    except Exception:
+        pass  # if the kernel inside the Docker VM doesn't support it, ignore
+    return s
+socket.socket = _socket_with_cc
 
 import Pyro4
-from config import TRACKER_HOST, TRACKER_PORT, ORIGINAL_MUSIC_DIR
 from chunk_utils import combine_file, tracker_call
 
-# ── Pyro4 configuration ────────────────────────────────────────────────────────
+# Pyro4 conf
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
 Pyro4.config.COMMTIMEOUT = 10
 
-# ── Determine this peer’s ID ────────────────────────────────────────────────────
+# Determine this peer’s ID
 env_id = os.environ.get("PEER_ID")
 if not env_id:
     print("PEER_ID environment variable is required!")
@@ -22,12 +35,12 @@ if not env_id:
 PEER_NUM = env_id
 print(f"[PEER {PEER_NUM}] starting up…")
 
-# ── Paths & constants ──────────────────────────────────────────────────────────
+# Paths & constants
 MUSIC_DIR = os.path.join("peers", f"peer{PEER_NUM}", "music")
 HEARTBEAT_INTERVAL = 10
-MAX_WORKERS = 6
+MAX_WORKERS = 100
 
-# ── Your container’s hostname for Pyro NAT advertising ─────────────────────────
+# Your container’s hostname for Pyro NAT advertising
 HOSTNAME = socket.gethostname()
 
 
@@ -104,6 +117,7 @@ def parallel_download(tracker, my_uri, parts):
 def handle_get_command(tracker, my_uri, filename):
     """Invoke the same logic as interactive 'get', then exit."""
     # 1) Resolve & download missing parts
+    start = time.time()
     print(f"[PEER {PEER_NUM}] (CLI) Resolving '{filename}'...")
     all_chunks = tracker_call(
         tracker.getChunksForFile,
@@ -130,6 +144,9 @@ def handle_get_command(tracker, my_uri, filename):
     output_path = os.path.join(MUSIC_DIR, filename)
     combine_file(paths, output_path)
     print(f"[PEER {PEER_NUM}] Reassembled → {filename}")
+    end = time.time()
+    dur = f"{end-start:.3f}"
+    print(f"[PEER {PEER_NUM}] Time = {dur}")
 
     # 3) Size‐validation against the original master file
     orig = os.path.join(ORIGINAL_MUSIC_DIR, filename)

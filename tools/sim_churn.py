@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import time, random, argparse, csv, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,7 +23,7 @@ def main():
 
     interval = 1.0 / args.rate
 
-    # Open the CSV file once and keep handle
+    # CSV file once to store
     csvfile = open(args.output, "w", newline="")
     writer = csv.writer(csvfile)
     writer.writerow(["timestamp_s","peer_id","action","active_count"])
@@ -32,7 +31,7 @@ def main():
 
     all_peers = list(range(1, args.peers+1))
     active = set(all_peers)
-    pool = ThreadPoolExecutor(max_workers=10)
+    pool = ThreadPoolExecutor(max_workers=100)
 
     start_time = time.time()
     next_event = start_time + interval

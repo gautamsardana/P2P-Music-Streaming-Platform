@@ -2,3 +2,4 @@ CHUNK_SIZE = 2048 * 1024
 TRACKER_HOST = "tracker"
 TRACKER_PORT = 9090
 ORIGINAL_MUSIC_DIR = "tools/music"
+CC_ALGO = b'cubic'

@@ -1,6 +1,21 @@
 import time
 import threading
 from collections import defaultdict
+import socket
+from config import CC_ALGO
+import ssl
+
+_orig_socket = socket.socket
+def _socket_with_cc(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0, fileno=None):
+    s = _orig_socket(family, type, proto, fileno)
+    try:
+        # choose 'reno' ot 'cubic'.
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, CC_ALGO)
+    except Exception:
+        pass
+    return s
+socket.socket = _socket_with_cc
+
 import Pyro4
 from config import TRACKER_HOST, TRACKER_PORT
 

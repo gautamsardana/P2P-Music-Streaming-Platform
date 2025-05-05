@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NUM_PEERS=$1
-RATE=$2    # e.g. 200kbit
+RATE=$2
 BURST="32mbit"
 
 for i in $(seq 1 $NUM_PEERS); do
