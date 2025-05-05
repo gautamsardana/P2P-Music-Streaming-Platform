@@ -12,12 +12,12 @@ from chunk_utils import combine_file, tracker_call
 # ── Pyro4 configuration ────────────────────────────────────────────────────────
 Pyro4.config.SERIALIZER = "pickle"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("pickle")
-Pyro4.config.COMMTIMEOUT = 2
+Pyro4.config.COMMTIMEOUT = 10
 
 # ── Determine this peer’s ID ────────────────────────────────────────────────────
 env_id = os.environ.get("PEER_ID")
 if not env_id:
-    print("⛔️  PEER_ID environment variable is required!")
+    print("PEER_ID environment variable is required!")
     sys.exit(1)
 PEER_NUM = env_id
 print(f"[PEER {PEER_NUM}] starting up…")

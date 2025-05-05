@@ -1,15 +1,19 @@
 services:
   tracker:
     build: .
-    entrypoint: ["python","tracker.py"]
+    entrypoint: [ "python","tracker.py" ]
     ports:
       - "9090:9090"
     networks:
       - p2pnet
 
   peer:
+    cap_add:
+      - NET_ADMIN
+#    sysctls:
+#      net.ipv4.tcp_congestion_control: bbr
     build: .
-    entrypoint: ["python","peer.py"]
+    entrypoint: [ "python","peer.py" ]
     volumes:
       - ./peers:/app/peers
     networks:
